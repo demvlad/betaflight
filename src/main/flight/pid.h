@@ -29,6 +29,7 @@
 #include "common/time.h"
 
 #include "pg/pg.h"
+#include "pg/pg_ids.h"
 
 #define MAX_PID_PROCESS_DENOM       16
 #define PID_CONTROLLER_BETAFLIGHT   1

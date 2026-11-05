@@ -62,14 +62,78 @@ static pt1Filter_t psasLiftCoefLowpass;
 static pt1Filter_t psasAccelZLowpass;
 static pt1Filter_t psasAccelYLowpass;
 
-static void psasFiltersInit(const pidProfile_t *pidProfile)
+PG_REGISTER_ARRAY_WITH_RESET_FN(psasProfile_t, PSAS_PROFILE_COUNT, psasProfiles, PG_PSAS_PROFILE, 1);
+void resetPsasProfile(psasProfile_t *psasProfile)
 {
-    pt1FilterInit(&psasPitchDampingLowpass, pt1FilterGain(pidProfile->psas_pitch_damping_filter_freq * 0.01f, pidRuntime.dT));
-    pt1FilterInit(&psasYawDampingLowpass, pt1FilterGain(pidProfile->psas_yaw_damping_filter_freq * 0.01f, pidRuntime.dT));
-    pt1FilterInit(&psasLiftCoefLowpass, pt1FilterGain(pidProfile->psas_lift_coef_filter_freq * 0.1f, pidRuntime.dT));
-    pt1FilterInit(&psasAccelZLowpass, pt1FilterGain(pidProfile->psas_accel_z_filter_freq * 0.1f, pidRuntime.dT));
+    RESET_CONFIG(psasProfile_t, psasProfile,
+    // Percent control output by pilot stick deflection
+        .psas_stick_gain = {
+            [FD_ROLL] = 100,
+            [FD_PITCH] = 100,
+            [FD_YAW] = 100,
+        },
+        // Percent control range addition by 1 degree per second angle rate * 1000
+        .psas_damping_gain = {
+            [FD_ROLL] = 20,
+            [FD_PITCH] = 50,
+            [FD_YAW] = 50,
+        },
+        .psas_pitch_damping_filter_freq = 30,  // pitch damping filter cut freq 0.3Hz (Tf=0.531s)
+        .psas_accel_z_filter_freq = 30,        // accel Z filter cut freq Hz * 10, 3Hz
+        .psas_pitch_stability_gain = 0,        // percent control range addition by 1g accel z change *10
+        .psas_yaw_damping_filter_freq = 5,     // yaw damping filter cut freq 0.05Hz (Tf=3s)
+        .psas_accel_y_filter_freq = 10,        // accel Y filter cut freq Hz * 10, 1Hz
+        .psas_yaw_stability_gain = 25,         // percent control by 1g Y accel change *10
+        .psas_pitch_accel_p_gain = 0,          // elevator for 1g Z accel difference in % *10
+        .psas_pitch_accel_i_gain = 0,          // elevator speed for 1g Z accel difference in %/sec
+        .psas_pitch_accel_max = 40,            // maximal positive Z accel value *10
+        .psas_pitch_accel_min = 40,            // maximal negative Z accel value *10
+        .psas_wing_load = 0,                   // wing load (mass / WingArea) g/decimeter^2 * 10. The g/decimeter^2 units is more comfortable for perception, than kg/m^2.
+        .psas_air_density = 1225,              // The current atmosphere air density [g/m^3], the MSA 1225 g/m^3 value is default. TODO: Dynamical air density computing by using baro sensors data
+        .psas_lift_c_limit = 10,               // Limit aerodynamics lift force coefficient value *10
+        .psas_aoa_limiter_gain = 0,            // elevator speed for 0.1 lift force coef difference in %/sec
+        .psas_lift_coef_filter_freq = 50,      // aoa limiter lift coef filter cut freq 5Hz * 10
+        .psas_aoa_limiter_forecast_time = 10,  // aoa limiter lift coef forecast time, 0.1s  *100
+        .psas_aoa_limiter_tau_return = 10,     // aoa limiter tau value, to return zero I value output 1s * 10
+        .psas_servo_time = 90,                 // minimal time of servo movement from neutrale to maximum, ms
+        .psas_roll_yaw_clift_start = 8,        // Aerodynamics lift force coef to start yaw control for roll rotation  *10
+        .psas_roll_yaw_clift_stop = 10,        // Aerodynamics lift force coef to maximum yaw control for roll rotation  *10
+        .psas_roll_to_yaw_link = 0,            // The maximal yaw control value to support roll rotation, % *10
+
+        // Enable speed curve for the PSAS gains
+        .psas_speed_curve_enabled_mask = 0,
+        .psas_speed_optimum_vref = 20,         // Reference speed value which has optimal plane settins m/s
+        .psas_speed_main_curve_power = 20,     // Speed gain curves power for damping, stability, pitch and yaw sticks *0.1
+        .psas_speed_roll_stick_curve_power = 10, // Speed gain curves power for roll stick *0.1
+        .psas_speed_main_curve_min = 20,       // Speed gain minimum for damping and stability *0.01
+        .psas_speed_main_curve_max = 200,      // Speed gain maximum for damping and stability *0.01
+        .psas_speed_stick_curve_min = 50,      // Speed gain minimum for sticks *0.01
+        .psas_speed_stick_curve_max = 200,     // Speed gain maximum for sticks *0.01
+        .psas_speed_curve_mode = SPEED_CURVE_MODE_TPA, // Use just Acro mode TPA hyperbolic curves
+        .psas_trim_enabled_mask = 0,    // Trimming disabled by default
+        .psas_trim_deadband = 25,       // Trim activations stick limit, *0.1 %
+        .psas_trim_lowpass_time = 1000, // Stick LowPass filters time, ms
+        .psas_trim_rate = 40,           // Trim I term, *0.01 1/s
+        .psas_trim_limit = 50,          // Trim output limit, %
+        .psas_trim_tau_reset = 350,     // Trim reset time, ms
+    );
+}
+
+void pgResetFn_psasProfiles(psasProfile_t *psasProfiles)
+{
+    for (int i = 0; i < PSAS_PROFILE_COUNT; i++) {
+        resetPsasProfile(&psasProfiles[i]);
+    }
+}
+
+static void psasFiltersInit(const psasProfile_t *psasProfile)
+{
+    pt1FilterInit(&psasPitchDampingLowpass, pt1FilterGain(psasProfile->psas_pitch_damping_filter_freq * 0.01f, pidRuntime.dT));
+    pt1FilterInit(&psasYawDampingLowpass, pt1FilterGain(psasProfile->psas_yaw_damping_filter_freq * 0.01f, pidRuntime.dT));
+    pt1FilterInit(&psasLiftCoefLowpass, pt1FilterGain(psasProfile->psas_lift_coef_filter_freq * 0.1f, pidRuntime.dT));
+    pt1FilterInit(&psasAccelZLowpass, pt1FilterGain(psasProfile->psas_accel_z_filter_freq * 0.1f, pidRuntime.dT));
     psasAccelZLowpass.state = 1.0f;
-    pt1FilterInit(&psasAccelYLowpass, pt1FilterGain(pidProfile->psas_accel_y_filter_freq * 0.1f, pidRuntime.dT));
+    pt1FilterInit(&psasAccelYLowpass, pt1FilterGain(psasProfile->psas_accel_y_filter_freq * 0.1f, pidRuntime.dT));
 }
 
 // Reset the all PSAS filters state to prevent initial issues during multiple PSAS switch On/Off
@@ -82,37 +146,37 @@ static void psasFiltersReset(void)
     psasAccelYLowpass.state = 0.0f;
 }
 
-void psasInit(const pidProfile_t *pidProfile)
+void psasInit(const psasProfile_t *psasProfile)
 {
-    psasFiltersInit(pidProfile);
+    psasFiltersInit(psasProfile);
     for (uint8_t axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
-        psasRuntime.stick_gain[axis] = pidProfile->psas_stick_gain[axis];
-        psasRuntime.damping_gain[axis] = pidProfile->psas_damping_gain[axis] * 0.001f;
+        psasRuntime.stick_gain[axis] = psasProfile->psas_stick_gain[axis];
+        psasRuntime.damping_gain[axis] = psasProfile->psas_damping_gain[axis] * 0.001f;
         psasRuntime.speed_gains.stick[axis] = 1.0f;
         psasRuntime.speed_gains.main[axis] = 1.0f;
     }
-    psasRuntime.pitch_stability_gain = pidProfile->psas_pitch_stability_gain * 0.1f;
-    psasRuntime.pitch_accel_p_gain = pidProfile->psas_pitch_accel_p_gain * 0.1f;
-    psasRuntime.pitch_accel_i_gain = pidProfile->psas_pitch_accel_i_gain;
-    psasRuntime.pitch_accel_min = -pidProfile->psas_pitch_accel_min * 0.1f;
-    psasRuntime.pitch_accel_max = pidProfile->psas_pitch_accel_max * 0.1f;
-    psasRuntime.yaw_stability_gain = pidProfile->psas_yaw_stability_gain * 0.1f;
-    psasRuntime.wing_load = pidProfile->psas_wing_load * 0.01f;
-    psasRuntime.air_density = pidProfile->psas_air_density * 0.001f;
-    psasRuntime.lift_c_limit = pidProfile->psas_lift_c_limit * 0.1f;
-    psasRuntime.aoa_limiter_gain = pidProfile->psas_aoa_limiter_gain * 10.0f;
-    psasRuntime.aoa_limiter_forecast_time = pidProfile->psas_aoa_limiter_forecast_time * 0.01f;
-    psasRuntime.aoa_limiter_tau_return = pidProfile->psas_aoa_limiter_tau_return * 0.1f;
-    psasRuntime.servoVelocityLimit = 100.0f / (pidProfile->psas_servo_time * 0.001f); // Limit servo velocity %/s. The psas_servo_time can not be zero - the CLI minimum value is 5.
-    psasRuntime.roll_yaw_clift_start = pidProfile->psas_roll_yaw_clift_start * 0.1f;
-    psasRuntime.roll_yaw_clift_stop = pidProfile->psas_roll_yaw_clift_stop * 0.1f;
-    psasRuntime.roll_to_yaw_link = pidProfile->psas_roll_to_yaw_link * 0.1f;
+    psasRuntime.pitch_stability_gain = psasProfile->psas_pitch_stability_gain * 0.1f;
+    psasRuntime.pitch_accel_p_gain = psasProfile->psas_pitch_accel_p_gain * 0.1f;
+    psasRuntime.pitch_accel_i_gain = psasProfile->psas_pitch_accel_i_gain;
+    psasRuntime.pitch_accel_min = -psasProfile->psas_pitch_accel_min * 0.1f;
+    psasRuntime.pitch_accel_max = psasProfile->psas_pitch_accel_max * 0.1f;
+    psasRuntime.yaw_stability_gain = psasProfile->psas_yaw_stability_gain * 0.1f;
+    psasRuntime.wing_load = psasProfile->psas_wing_load * 0.01f;
+    psasRuntime.air_density = psasProfile->psas_air_density * 0.001f;
+    psasRuntime.lift_c_limit = psasProfile->psas_lift_c_limit * 0.1f;
+    psasRuntime.aoa_limiter_gain = psasProfile->psas_aoa_limiter_gain * 10.0f;
+    psasRuntime.aoa_limiter_forecast_time = psasProfile->psas_aoa_limiter_forecast_time * 0.01f;
+    psasRuntime.aoa_limiter_tau_return = psasProfile->psas_aoa_limiter_tau_return * 0.1f;
+    psasRuntime.servoVelocityLimit = 100.0f / (psasProfile->psas_servo_time * 0.001f); // Limit servo velocity %/s. The psas_servo_time can not be zero - the CLI minimum value is 5.
+    psasRuntime.roll_yaw_clift_start = psasProfile->psas_roll_yaw_clift_start * 0.1f;
+    psasRuntime.roll_yaw_clift_stop = psasProfile->psas_roll_yaw_clift_stop * 0.1f;
+    psasRuntime.roll_to_yaw_link = psasProfile->psas_roll_to_yaw_link * 0.1f;
 
-    isEnabledAccelZController = sensors(SENSOR_ACC) && pidProfile->psas_pitch_accel_i_gain != 0; // Enable controller for non zero I. The P (psas_pitch_accel_p_gain) is an additional option
-    isEnabledLiftCoefEstimation = sensors(SENSOR_ACC) && pidProfile->psas_wing_load != 0;
-    isEnabledAoALimiter = isEnabledLiftCoefEstimation && pidProfile->psas_aoa_limiter_gain != 0;
+    isEnabledAccelZController = sensors(SENSOR_ACC) && psasProfile->psas_pitch_accel_i_gain != 0; // Enable controller for non zero I. The P (psas_pitch_accel_p_gain) is an additional option
+    isEnabledLiftCoefEstimation = sensors(SENSOR_ACC) && psasProfile->psas_wing_load != 0;
+    isEnabledAoALimiter = isEnabledLiftCoefEstimation && psasProfile->psas_aoa_limiter_gain != 0;
 
-    psasTrimmingInit(pidProfile);
+    psasTrimmingInit(psasProfile);
 }
 
 static void FAST_CODE_NOINLINE computeLiftCoefficient(const pidProfile_t *pidProfile, float accelZ, float *liftCoef, float *liftCoefVelocity)
@@ -505,7 +569,7 @@ static void FAST_CODE_NOINLINE psasUpdate(const pidProfile_t *pidProfile)
     DEBUG_SET(DEBUG_PSAS, 2, lrintf(liftCoef * 100.0f)); //!< Lift coefficient [unit:0.01]
 }
 
-uint8_t FAST_CODE_NOINLINE psasHandleMode(const pidProfile_t *pidProfile)
+uint8_t FAST_CODE_NOINLINE psasHandleMode(const psasProfile_t *psasProfile)
 {
     bool isPSAS = isFixedWing() && FLIGHT_MODE(PSAS_MODE);
     if (isPSAS) {
@@ -523,7 +587,7 @@ uint8_t FAST_CODE_NOINLINE psasHandleMode(const pidProfile_t *pidProfile)
 
         if (pidRuntime.pidStabilisationEnabled) {
             psasTrimmingUpdate();
-            psasUpdate(pidProfile);
+            psasUpdate(psasProfile);
         } else {
             memset(&psasData, 0, sizeof(psasData));
             psasFiltersReset();
